@@ -33,7 +33,6 @@ class _FakeSupervisor(supmod.IdalibSupervisor):
         self.forwarded: list[dict] = []
         self.opened: list[tuple[str, dict]] = []
         self.tool_calls: list[tuple[str, dict | None]] = []
-        self.attached: set[str] = set()
 
     def _spawn_worker(self):
         return supmod.WorkerSession(
@@ -93,12 +92,6 @@ class _FakeSupervisor(supmod.IdalibSupervisor):
                 },
                 "warmup": warmup,
             }
-        if name == "idb_attach":
-            self.attached.add(arguments["supervisor_id"])
-            return {"supervisor_count": len(self.attached), "connected_supervisors": sorted(self.attached)}
-        if name == "idb_detach":
-            self.attached.discard(arguments["supervisor_id"])
-            return {"supervisor_count": len(self.attached), "connected_supervisors": sorted(self.attached)}
         return {"ok": True, "error": None}
 
     def _session_is_reachable(self, session):
@@ -115,41 +108,6 @@ class _FakeSupervisor(supmod.IdalibSupervisor):
             "failed_probe": None if reachable else "tcp_connect",
             "error": None if reachable else "unreachable",
         }
-
-
-class _MainExit(Exception):
-    pass
-
-
-class _FakeInputBuffer:
-    def __init__(self, lines):
-        self.lines = list(lines)
-
-    def readline(self):
-        if not self.lines:
-            return b""
-        return self.lines.pop(0)
-
-
-class _FakeStdin:
-    def __init__(self, lines):
-        self.buffer = _FakeInputBuffer(lines)
-
-
-class _RecordingOutputBuffer:
-    def __init__(self):
-        self.writes = []
-
-    def write(self, data):
-        self.writes.append(data)
-
-    def flush(self):
-        pass
-
-
-class _FakeStdout:
-    def __init__(self):
-        self.buffer = _RecordingOutputBuffer()
 
 
 def _patch_discovery(*, instances, probe):
@@ -297,21 +255,6 @@ def test_handle_tools_call_errors_when_database_empty():
         assert "database is required" in result["result"]["content"][0]["text"]
     finally:
         supmod.supervisor = old_supervisor
-
-
-def test_supervisor_does_not_expose_session_binding_tools():
-    sup = _FakeSupervisor()
-    tools = sup.worker_tools()
-    names = {tool["name"] for tool in tools}
-    assert "idalib_switch" not in names
-    assert "idalib_unbind" not in names
-    assert "idalib_current" not in names
-    assert "idalib_switch" not in supmod.IDB_MANAGEMENT_TOOLS
-    assert "idalib_unbind" not in supmod.IDB_MANAGEMENT_TOOLS
-    assert "idalib_current" not in supmod.IDB_MANAGEMENT_TOOLS
-    assert not hasattr(supmod, "idalib_switch")
-    assert not hasattr(supmod, "idalib_unbind")
-    assert not hasattr(supmod, "idalib_current")
 
 
 def test_open_session_rejects_unknown_mode(tmp_path):
@@ -502,12 +445,6 @@ def test_open_session_skips_warmup_when_flags_disabled(tmp_path):
     assert args["build_caches"] is False
     assert args["init_hexrays"] is False
     assert session.last_warmup is None
-
-
-def test_supervisor_does_not_expose_idalib_warmup_tool():
-    assert "idalib_warmup" not in supmod.IDB_MANAGEMENT_TOOLS
-    assert not hasattr(supmod, "idalib_warmup")
-    assert not hasattr(supmod, "IdalibWarmupResult")
 
 
 def test_resolve_session_requires_database():
@@ -752,12 +689,6 @@ def test_list_sessions_reports_is_active_from_health_probe(tmp_path):
     assert listed == {"first": True, "second": False}
 
 
-def test_supervisor_does_not_expose_idalib_health_tool():
-    assert "idalib_health" not in supmod.IDB_MANAGEMENT_TOOLS
-    assert not hasattr(supmod, "idalib_health")
-    assert not hasattr(supmod, "IdalibHealthResult")
-
-
 def test_supervisor_uses_idb_prefixed_management_tools_only():
     """No legacy names should leak into IDB_MANAGEMENT_TOOLS or module symbols."""
     legacy = {
@@ -766,12 +697,17 @@ def test_supervisor_uses_idb_prefixed_management_tools_only():
         "idalib_list",
         "idalib_save",
         "idb_close",
-        "idb_attach",
-        "idb_detach",
+        "idalib_switch",
+        "idalib_unbind",
+        "idalib_current",
+        "idalib_warmup",
+        "idalib_health",
     }
     assert supmod.IDB_MANAGEMENT_TOOLS == {"idb_open", "idb_list"}
     for name in legacy:
         assert not hasattr(supmod, name), f"{name} should have been deleted"
+    for typename in ("IdalibWarmupResult", "IdalibHealthResult"):
+        assert not hasattr(supmod, typename), f"{typename} should have been deleted"
     # --stdio-shared and its support code should be gone.
     for name in (
         "_stdio_proxy",
